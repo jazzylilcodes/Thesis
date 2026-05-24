@@ -1,0 +1,44 @@
+##	Flow cytometry grouped analysis code  
+# Export and import FlowJo data 
+aps_raw <- fcexpr::wsx_get_popstats(ws = "D:/Flow/23-Jul-2025_II.wsp") 
+ps <- aps_raw[["counts"]] 
+view(ps) 
+openxlsx::write.xlsx(ps,file = "D:/Flow/analysis_table_II") 
+# Define groups (neurosphere size/density) 
+group_a <- c("21-199", "22-029", "22-042", "22-043", "22-065") 
+group_b <- c("20-201", "22-073", "22-097", "22-089", "22-110") 
+flow_analysis$Group <- ifelse(flow_analysis$`Cell line` %in% group_a, "A", 
+                              ifelse(flow_analysis$`Cell line` %in% group_b, "B", NA)) 
+ 
+ 
+stats_results <- flow_analysis %>% 
+  group_by(Gate) %>% 
+  summarise( 
+    p_value = wilcox.test(`Population of live` ~ Group)$p.value, 
+    t_statistic = wilcox.test(`Population of live` ~ Group)$statistic 
+  ) 
+ 
+stats_results <- stats_results %>% 
+  mutate(p_adj = p.adjust(p_value, method = "BH")) 
+ 
+# print results 
+stats_results 
+# Loop through each gate to for individual grouped plots 
+for (g in unique(flow_analysis$Gate)) { 
+   
+  df_sub <- flow_analysis[flow_analysis$Gate == g, ] 
+   
+  p <- ggplot(df_sub, 
+              aes(x = Group, y = `Population of live`, fill = Group)) + 
+    geom_boxplot() + 
+    labs(title = paste("Population of live cells - Gate:", g)) + 
+    theme_bw() 
+   
+  ggsave( 
+    filename = file.path(output_dir, paste0("Population_live_", g, ".png")), 
+    plot = p, 
+    width = 6, 
+    height = 4 
+  ) 
+} 
+ 
