@@ -1,0 +1,191 @@
+##  Neurosphere area plotting day 5 growth
+# filter for spheres over area 2500um^2 
+df_2500 <- df_long %>% 
+  filter(Area > 2500) 
+ 
+# Convert CellLine to a factor with this order 
+df_2500$CellLine <- factor(df_2500$CellLine, levels = stl_order) 
+ 
+# boxplot with custom colours 
+ggplot(df_2500, aes(x = CellLine, y = Area, fill = CellLine)) + 
+  # Boxplot with black outline and a black mean bar 
+  geom_boxplot( 
+    outlier.shape = NA, 
+    color = "black",        # black outline 
+    alpha = 0.8, 
+    width = 0.7 
+  ) + 
+  # Add jitter points using darker shades 
+  geom_jitter(aes(color = CellLine), width = 0.2, alpha = 0.5, size = 1.8) + 
+  scale_fill_manual(values = donor_colours) + 
+  scale_color_manual(values = donor_colours_dark) + 
+  theme_minimal() + 
+  labs( 
+    x = "", 
+    y = "Neurosphere area (μm²)", 
+    title = "Neurosphere area after 5 days growth" 
+  ) + 
+  theme( 
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    legend.position = "none" 
+  ) 
+ 
+##	Neurosphere area plotting code day 2 and 5 
+# Normalise the data day 2 
+df2_normalised <- df2_long %>%  
+  filter(!is.na(Area)) %>%   
+  group_by(CellLine) %>%  
+  mutate(RelativeArea = Area / median(Area)) %>%  
+  ungroup() 
+ 
+# Normalise the data day 5 
+df_normalised <- df_long %>%  
+  filter(!is.na(Area)) %>%   
+  group_by(CellLine) %>%  
+  mutate(RelativeArea = Area / median(Area)) %>%  
+  ungroup() 
+ 
+# Combine data frames 
+df_normalised <- df_normalised %>% mutate(Day = "Day 5") 
+df2_normalised <- df2_normalised %>% mutate(Day = "Day 2") 
+df_unnorm <- df_long %>% mutate(Day = "Day 5") 
+df2_unnorm <- df2_long %>% mutate(Day = "Day 2") 
+ 
+# Combine into one dataframe 
+df_both <- bind_rows(df_normalised, df2_normalised) 
+df_both_unnorm <- bind_rows(df_unnorm, df2_unnorm) 
+ 
+# Plot grouped boxplots with jitter 
+ggplot(df_both, aes(x = CellLine, y = Area, fill = Day)) + 
+  geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.8)) + 
+  geom_jitter(aes(color = Day), 
+              alpha = 0.5, 
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) + 
+  theme_minimal() + 
+  labs( 
+    x = "", 
+    y = "Spheroid area (μm²)", 
+    title = "Spheroid growth" 
+  ) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+ 
+##  Neurosphere intensity plotting code 
+# Calculate mean background for each image 
+mean_background <- colMeans(background, na.rm = TRUE) 
+ 
+# Normalize each ROI intensity by subtracting the mean background for each image 
+normalized <- sweep(roi_values, 2, mean_background, FUN = "-") 
+# boxplot with dark bars instead of custom colours 
+ggplot(normalized_long, aes(x = CellLine, y = NormalizedIntensity, fill = CellLine)) + 
+  # Boxplot with black outline and a black mean bar 
+  geom_boxplot( 
+    outlier.shape = NA, 
+    color = "black",        # black outline 
+    alpha = 0.8, 
+    width = 0.7 
+  ) + 
+  # Add jitter points using darker shades 
+  geom_jitter(aes(color = CellLine), width = 0.2, alpha = 0.5, size = 1.8) + 
+  scale_fill_manual(values = donor_colours) + 
+  scale_color_manual(values = donor_colours_dark) + 
+  theme_minimal() + 
+  labs( 
+    x = "", 
+    y = "Intensity", 
+    title = "Neurosphere midpoint intensity after 5 days growth" 
+  ) + 
+  theme( 
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    legend.position = "none" 
+  ) 
+ 
+##	Correlation of area and intensity data between cell lines code 
+cor.test(combined_df$MeanArea, combined_df$MeanIntensity, method = "spearman") 
+ 
+combined_df <- combined_df %>% 
+  mutate( 
+    Area_z = scale(MeanArea), 
+    Intensity_z = scale(MeanIntensity), 
+    CombinedScore = (Area_z + Intensity_z) / 2 
+  ) %>% 
+  arrange(desc(CombinedScore)) 
+ 
+cor.test(combined_df$MeanArea, combined_df$MeanIntensity, method = "spearman") 
+ 
+ggplot(combined_df, aes(x = reorder(CellLine, CombinedScore), y = CombinedScore, fill = Group)) + 
+  geom_col() + 
+  coord_flip() + 
+  theme_minimal() + 
+  labs( 
+    title = "Combined Size + Density Score per Cell Line", 
+    x = "Cell Line", 
+    y = "Z-Score (Combined)" 
+  ) 
+ 
+geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") 
+ 
+##	Statistical comparison between groups for neurosphere area 
+# Define groups (ranked off size/density) 
+group_aI <- c("21-199", "22-029", "22-042", "22-043", "22-065") 
+group_bI <- c("20-201", "22-073", "22-097", "22-089", "22-110") 
+ 
+# Add a new column for grouping 
+df_2500 <- df_2500 %>% 
+  mutate(GroupI = case_when( 
+    CellLine %in% group_aI ~ "AI", 
+    CellLine %in% group_bI ~ "BI", 
+    TRUE ~ NA_character_ 
+  )) 
+ 
+# Group mean area of each image to defined groups 
+cellarea_means <- df_2500 %>% 
+  group_by(CellLine, GroupI) %>% 
+  summarise(MeanArea = mean(Area, na.rm = TRUE)) %>% 
+  ungroup() 
+ 
+# run test and print p value 
+wilcox_result <- wilcox.test( 
+  MeanArea ~ GroupI, 
+  data = cellarea_means, 
+  exact = FALSE 
+) 
+ 
+wilcox_result 
+ 
+# stats not of the mean, but all values 
+t.test(cellarea_means ~ Group, data = cellarea_means) 
+ 
+wilcox.test(cellarea_means ~ Group, data = cellarea_means) 
+ 
+# Run Wilcoxon rank-sum test (Mann–Whitney U) 
+wilcox_result <- wilcox.test( 
+  NormalizedIntensity ~ Group, 
+  data = cellarea_means, 
+  exact = FALSE  # avoids warning if sample sizes differ 
+) 
+ 
+# Print the p-value 
+wilcox_result$p.value 
+ 
+##	Statistical comparison between groups for neurosphere intensity 
+# Add a new column for grouping 
+normalized_long <- normalized_long %>% 
+  mutate(GroupI = case_when( 
+    CellLine %in% group_aI ~ "AI", 
+    CellLine %in% group_bI ~ "BI", 
+    TRUE ~ NA_character_ 
+  )) 
+ 
+# Group mean intensity of each image to defined groups 
+cellline_means <- normalized_long %>% 
+  group_by(CellLine, GroupI) %>% 
+  summarise(MeanIntensity = mean(NormalizedIntensity, na.rm = TRUE)) %>% 
+  ungroup() 
+ 
+# Run test and print p value 
+wilcox_result <- wilcox.test( 
+  MeanIntensity ~ GroupI, 
+  data = cellline_means, 
+  exact = FALSE 
+) 
+wilcox_result
