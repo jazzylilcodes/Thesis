@@ -1,1 +1,641 @@
+---
+title: "MS LFQ QC (Proteome Discoverer)"
+author: "Sam Siljee"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include = FALSE}
+library(dplyr) # Pipe and data manipulation
+library(tidyr) # For pivot_wider call in PSM counts
+library(ggplot2) # Graphing
+library(vroom) # fast data reading
+library(ggVennDiagram) # Make Venn diagrams
+# library(mzR) # To load data for chromatograms
+library(MSstats) # To make profile plots for proteins of interest
+library(ComplexUpset) # Used to make Upset plots
+library(stringr) # Import txt data function
+```
+
+## Load data
+```{r load final LFQ data, include = FALSE}
+# Set output directory
+output_dir <- "MS_QC/"
+input_dir <- "data/"
+# final_proteins_file <- "LFQ_TMT_common_differential_proteins.txt"
+# Gene_symbol_map <- "gene_symbol_map.tsv"
+
+# Load pre-prepared data
+rda_files <- c(
+  "Run_annotations.rda",
+  "PSMs.rda",
+  "PGs.rda",
+  "PeptideGroups.rda",
+  # "MSMSSpectrumInfo.rda",
+  "Proteins.rda",
+  # "tic_data.rda",
+  "covariate_processed.rda")
+for (i in rda_files) {
+  load(paste0(input_dir, i))
+}
+
+# Read in list of final proteins of interest
+# final_proteins <- readLines(paste0(input_dir, final_proteins_file))
+
+# Load the gene symbols map
+# gene_symbols_map <- read.delim(paste0(input_dir, Gene_symbol_map), header = TRUE, sep = "\t")
+
+# Load PD LFQ output from txt files
+files_list <- list.files(input_dir, full.names = TRUE)
+
+# Get lists of PSM and protein groups files separately
+PSM_files <- grep(files_list, pattern = "_PSMs.txt$", value = TRUE)
+PG_files <- grep(files_list, pattern = "_ProteinGroups.txt$", value = TRUE)
+PeptideGroups_files <- grep(files_list, pattern = "_PeptideGroups.txt$", value = TRUE)
+# MSMSSpectrumInfo_files <- grep(files_list, pattern = "_MSMSSpectrumInfo.txt$", value = TRUE)
+Proteins_files <- grep(files_list, pattern = "_Proteins.txt$", value = TRUE)
+
+# Load run summary to use as annontations file, add "Path" column to merge with other datasets
+Run_annotations <- run_annotations_mv %>%
+  mutate(
+    # Add column to match up to protein and peptide groups files
+    PG_path = paste0(
+      "data/",
+      gsub(".raw", "", Run),
+      "_ProteinGroups.txt"
+    ),
+    PeptideGroups_path = paste0(
+      "data/",
+      gsub(".raw", "", Run),
+      "_PeptideGroups.txt"
+    ),
+     Proteins_path = paste0(
+      "data/",
+      gsub(".raw", "", Run),
+      "_Proteins.txt"
+    ),
+    # Add columns useful for annotation
+    Donor = BioReplicate,
+    Sample = paste(BioReplicate, Condition),
+    Key = "A"
+  ) %>%
+  # Convert some columns to factors for faster computation
+  mutate(
+    across(
+      c(
+        Batch,
+        Key,
+        Sample,
+        Run,
+        Donor,
+        Condition
+      ),
+      as.factor
+    )
+  )
+# Save as r data file for faster loading in future
+save(Run_annotations, file = paste0(input_dir, "Run_annotations.rda"))
+
+# Load PSM data
+PSMs <- data.frame()
+for (i in PSM_files) {
+  PSMs <- rbind(PSMs, vroom(i))
+}
+# Combine with annotations
+PSMs <- merge(
+  PSMs,
+  mutate(Run_annotations, "Spectrum File" = Run),
+  by = "Spectrum File",
+  all.x = TRUE
+)
+
+# Check run_annotations merged successfully
+str(PSMs)
+
+# Save as r data file for faster loading in future
+save(PSMs, file = paste0(input_dir, "PSMs.rda"))
+
+# Load protein group data
+PGs <- data.frame()
+for (i in PG_files) {
+  PGs <- bind_rows(PGs, mutate(vroom(i), Path = i))
+}
+# Combine with annotations
+PGs <- merge(
+  PGs,
+  Run_annotations,
+  by.x = "Path",
+  by.y = "PG_path",
+  all.x = TRUE
+)
+# Save as r data file for faster loading in future
+save(PGs, file = paste0(input_dir, "PGs.rda"))
+
+# Load pepetide group data
+PeptideGroups <- data.frame()
+for (i in PeptideGroups_files) {
+  PeptideGroups <- bind_rows(PeptideGroups, mutate(vroom(i), Path = i))
+}
+# Combine with annotations
+PeptideGroups <- merge(
+  PeptideGroups,
+  Run_annotations,
+  by.x = "Path",
+  by.y = "PeptideGroups_path",
+  all.x = TRUE
+)
+# Save as r data file for faster loading in future
+save(PeptideGroups, file = paste0(input_dir, "PeptideGroups.rda"))
+
+# Check each replicate loaded
+unique(PeptideGroups$BioReplicate)
+
+# Load spectrum information data
+MSMSSpectrumInfo <- data.frame()
+for (i in MSMSSpectrumInfo_files) {
+  MSMSSpectrumInfo <- rbind(MSMSSpectrumInfo, mutate(vroom(i), Path = i))
+}
+# Combine with annotations
+MSMSSpectrumInfo <- merge(
+  MSMSSpectrumInfo,
+  mutate(Run_annotations, "Spectrum File" = paste0(Run, ".raw")),
+  by = "Spectrum File",
+  all.x = TRUE
+)
+# Save as r data file for faster loading in future
+save(MSMSSpectrumInfo, file = paste0(input_dir, "MSMSSpectrumInfo.rda"))
+
+# Load proteins data
+Proteins <- data.frame()
+for (i in Proteins_files) {
+  Proteins <- bind_rows(Proteins, mutate(vroom(i), Path = i))
+}
+# Combine with annotations
+Proteins <- merge(
+  Proteins,
+  Run_annotations,
+  by.x = "Path",
+  by.y = "Proteins_path",
+  all.x = TRUE
+)
+# Save as r data file for faster loading in future
+save(Proteins, file = paste0(input_dir, "Proteins.rda"))
+
+# Load TIC data for chromatograms
+mzML_files <- list.files(input_dir, full.names = TRUE) %>%
+  grep(pattern = ".mzML$", value = TRUE)
+
+# Initialise data.frame
+tic_data <- data.frame()
+
+# Read in mzML files and extract TIC values to data.frame
+for (i in mzML_files) {
+  # Open file
+  tic_data <- rbind(
+    tic_data,
+    openMSfile(i) %>%
+      mzR::tic() %>%
+      mutate(mzML_path = i)
+  )
+}
+
+# Merge with run overview data for annotations
+tic_data <- merge(
+  tic_data,
+  mutate(
+    Run_annotations,
+    # Add column to match up to protein groups files
+    mzML_path = paste0(input_dir, "/", gsub(".raw", "", Run), ".mzML")),
+    by = "mzML_path",
+  all.x = TRUE
+)
+
+# Save as R data for faster laoding in future
+save(tic_data, file = paste0(input_dir, "tic_data.rda"))
+```
+  
+## Summarise details of the runs
+```{r Run summary table}
+# Count number of proteins per run
+PG_summary <- PGs %>%
+  group_by(Run) %>%
+  summarise("Protein groups" = length(unique(`Protein Groups Protein Group ID`)))
+
+# Count number of PSMs per run
+PSM_summary <- PSMs %>%
+  group_by(`Spectrum File`) %>%
+  summarise("PSMs" = n()) %>%
+  mutate(Run = `Spectrum File`)
+
+# Combine with Run_annotations and select desired columns
+Run_summary <- merge(
+  PG_summary,
+  PSM_summary
+) %>%
+  # Add in Run_annotations data to get NL values
+  merge(Run_annotations) %>%
+  dplyr::select(
+    Run,
+    PSMs,
+    `Protein groups`,
+    Key,
+    Batch,
+    Sample
+  )
+```
+
+## Chromatograms
+```{r Chromatograms, include = FALSE}
+tic_data %>%
+  ggplot(aes(x = time, y = TIC, col = Sample)) +
+  geom_line() +
+  facet_grid(Sample ~ Batch) +
+  labs(
+    title = "Chromatograms for LFQ runs",
+    x = "Retention time"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Save the plot standard size
+ggsave("../produced_plots/MS_QC/Chromatograms facet grid.png", width = 8, height = 5.5)
+
+# Save the plot large
+ggsave("../produced_plots/MS_QC/Chromatograms facet grid large.png", width = 8 * 4, height = 5.5 * 4)
+```
+
+## Protein identifications by Sample
+```{r Protein identifications by key}
+Run_summary %>%
+  ggplot(aes(x = Sample, y = `Protein groups`, col = Batch)) +
+  geom_point(alpha = 0.5) +
+  ggtitle("Identifications by sample") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0, hjust = 1)
+  )
+
+# Save the plot
+ggsave(paste0(output_dir, "PGs by sample short y axis_alpha.png"), width = 8, height = 5.5)
+
+# repeat with full length y axis
+Run_summary %>%
+  ggplot(aes(x = Sample, y = `Protein groups`, col = Batch)) +
+  geom_point(alpha = 0.5) +
+  expand_limits(y = 0) +
+  ggtitle("Identifications by sample") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0, hjust = 1)
+  )
+
+# Save the plot
+ggsave(paste0(output_dir, "PGs by sample.png"), width = 8, height = 5.5)
+```
+
+## Venn diagrams
+Overview of protein overlaps between replicates of the same sample
+
+```{r venn diagrams}
+for (i in Run_annotations$Sample) {
+  venn_list <- PGs %>%
+    filter(Sample == i) %>%
+    split(.$Batch) %>%
+    lapply(function(df) {
+      df %>%
+        select(`Group Description`) %>%
+        pull()
+    })
+
+  # make the plot
+  ggVennDiagram(venn_list) +
+    theme_void() +
+    ggtitle(paste(i, "protein identification overlap")) +
+    ggplot2::scale_fill_gradient(low = "white", high = "red")
+
+  # Save the plot
+  ggsave(paste0(output_dir, i, "replication venn diagram.png"), width = 8, height = 5.5)
+}
+```
+
+## PSMs By RT
+Plot of peptide-spectrum matches by retention time. Coloured by run or condition
+
+```{r PSMs by retention time plot, echo = FALSE}
+# Make the plot by run
+PSMs %>%
+  ggplot(aes(x = `RT [min]`, color = `Spectrum File`)) +
+  geom_density() +
+  scale_y_continuous(
+    name = "Peptide-spectrum matches",
+    breaks = NULL
+  ) +
+  labs(x = "Retention time (minutes)") +
+  ggtitle("PSMs by retention time") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave(paste0(output_dir, "PSMs over RT by run.png"), width = 8, height = 5.5)
+
+# Make the plot by run
+PSMs %>%
+  ggplot(aes(x = `RT [min]`, color = Batch)) +
+  geom_density() +
+  scale_y_continuous(
+    name = "Peptide-spectrum matches",
+    breaks = NULL
+  ) +
+  labs(x = "Retention time (minutes)") +
+  ggtitle("PSMs by retention time") +
+  theme_bw()
+
+# Save the plot
+ggsave(paste0(output_dir, "PSMs over RT by batch.png"), width = 8, height = 5.5)
+
+# Plot by run using facet grid
+PSMs %>%
+  ggplot(aes(x = `RT [min]`)) +
+  geom_density() +
+  scale_y_continuous(
+    name = "Peptide-spectrum matches",
+    breaks = NULL
+  ) +
+  scale_x_continuous(breaks = seq(0, 125, by = 20)) +
+  labs(x = "Retention time (minutes)") +
+  facet_grid(Sample ~ Batch) +
+  ggtitle("PSMs by retention time") +
+  theme_bw()
+
+# Save the plot
+ggsave(paste0(output_dir, "PSMs over RT by run facet grid.png"), width = 8, height = 5.5)
+
+# Make the plot by condition
+PSMs %>%
+  ggplot(aes(x = `RT [min]`, color = Condition)) +
+  geom_density() +
+  scale_y_continuous(
+    name = "Peptide-spectrum matches",
+    breaks = NULL
+  ) +
+  labs(x = "Retention time (minutes)") +
+  ggtitle("PSMs by retention time") +
+  theme_bw()
+
+# Save the plot
+ggsave(paste0(output_dir, "PSMs over RT by condition.png"), width = 8, height = 5.5)
+```
+
+## Missed Cleavages
+Plot of missed cleavages, from peptide groups level data
+
+```{r missed cleavages, echo = FALSE}
+PeptideGroups %>%
+  count(`# Missed Cleavages` = `# Missed Cleavages`) %>%
+  mutate(Percent = prop.table(n)) %>%
+  ggplot(aes(x = `# Missed Cleavages`, y = Percent, label = scales::percent(Percent))) +
+  geom_col(position = "dodge") +
+  geom_text(
+    position = position_dodge(width = .9), # move to center of bars
+    vjust = -0.5, # nudge above top of bar
+    size = 3
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Number of missed cleavages") +
+  ggtitle("Missed cleavages") +
+  theme_bw() +
+  theme(axis.text.y = element_blank())
+
+# Save the plot
+ggsave(paste0(output_dir, "Missed cleavages.png"), width = 8, height = 5.5)
+```
+
+## Precursor charge
+Distribution of precursor charge by run. Plotted for spectrum and PSM level data
+
+```{r charge, echo = FALSE}
+# Create spectrum level plot
+MSMSSpectrumInfo %>%
+  filter(`MS Order` == "MS2") %>%
+  mutate(Charge = as.factor(`Precursor Charge`)) %>%
+  ggplot(aes(x = Charge, fill = `Spectrum File`)) +
+  geom_bar(position = "dodge") +
+  labs(x = "Charge", y = "Count") +
+  ggtitle("Precursor charge - spectrum level") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave(paste0(output_dir, "spectrum charge distribution by run.png"), width = 8, height = 5.5)
+
+# Create PSM level plot
+PSMs %>%
+  mutate(Charge = as.factor(`Charge`)) %>%
+  ggplot(aes(x = Charge, fill = `Spectrum File`)) +
+  geom_bar(position = "dodge") +
+  labs(x = "Charge", y = "Count") +
+  ggtitle("Precursor charge - PSM level") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave(paste0(output_dir, "PSM charge distribution by run.png"), width = 8, height = 5.5)
+```
+
+## Mass Error
+Plot of mass error by run
+
+```{r precursor mass error, echo = FALSE}
+# Density plot of precursor mass error - PSM level
+PSMs %>%
+  ggplot(aes(x = `Deltam/z [Da]`, colour = `Spectrum File`)) +
+  geom_density(alpha = 0.2) +
+  labs(x = expression(~Delta ~ "m/z (Da)"), y = NULL) +
+  ggtitle("Mass error - PSM level") +
+  theme_bw() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "none"
+  )
+
+# Save the plot
+ggsave(paste0(output_dir, "PSM mass error by run.png"), width = 8, height = 5.5)
+
+# Density plot of precursor mass error - PSM level - by Batch
+PSMs %>%
+  ggplot(aes(x = `Deltam/z [Da]`, colour = Batch)) +
+  geom_density(alpha = 0.2) +
+  labs(x = expression(~Delta ~ "m/z (Da)"), y = NULL) +
+  ggtitle("Mass error - PSM level") +
+  theme_bw() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+# Save the plot
+ggsave(paste0(output_dir, "PSM mass error by batch.png"), width = 8, height = 5.5)
+
+# Density plot of precursor mass error - PSM level - by Batch - ppm
+PSMs %>%
+  ggplot(aes(x = `DeltaM [ppm]`, colour = Batch)) +
+  geom_density(alpha = 0.2) +
+  labs(x = expression(~Delta ~ "m/z (ppm)"), y = NULL) +
+  ggtitle("Mass error - PSM level") +
+  theme_bw() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+# Save the plot
+ggsave(paste0(output_dir, "PSM mass error by batch ppm.png"), width = 8, height = 5.5)
+```
+
+## Identification Efficiency
+```{r identification efficiency, echo = FALSE}
+
+# Count PSMs
+TotalPSMs <- PSMs %>%
+  group_by(`Spectrum File`) %>%
+  summarise(PSMs = n())
+
+# Count spectra
+TotalSpectra <- MSMSSpectrumInfo %>%
+  group_by(`Spectrum File`) %>%
+  summarise(Spectra = n())
+
+# Combine and calculate
+EfficiencyTab <- merge(TotalPSMs, TotalSpectra, by = "Spectrum File") %>%
+  mutate("Identification rate" = paste(round(PSMs / Spectra * 100, 1), "%"))
+
+# Display as table
+knitr::kable(EfficiencyTab)
+
+#export as csv
+write.csv(Run_summary, paste0(output_dir, "Run_summary.csv"))
+```
+
+## Upset plot
+```{r UpSet plot, include = FALSE}
+# prepare the data for UpSet plots. Rows represent proteins, columns represent runs. 1 and 0 are used to represent whether the protein was detected in that sample or not.
+# Create a list of all proteins to search against
+All_proteins <- as.character(unique(Proteins$Accession))
+All_runs <- as.character(unique(Proteins$Run))
+
+# Pivot wider to create the matrix
+UpSet_matrix <- Proteins %>%
+  mutate(present = 1) %>%
+  pivot_wider(
+    id_cols = Accession,
+    names_from = Run,
+    values_from = present,
+    values_fill = 0
+  )
+
+# Make the plot per Sample
+for (i in unique(Run_annotations$Sample)) {
+  # Make a list of runs to include
+  selected_runs <- Run_annotations %>%
+    filter(Sample == i) %>%
+    pull(Run) %>%
+    as.character()
+
+  # make the plot
+  upset(
+    UpSet_matrix,
+    selected_runs,
+    name = "Run intersections",
+    width_ratio = 0.1,
+    height_ratio = 0.3,
+    n_intersections = 15,
+    base_annotations = list(
+      "Protein identifications" = intersection_size(text_mapping = aes(label = !!upset_text_percentage()))
+    ),
+    min_degree = 1
+  )
+
+  # Save the plot
+  ggsave(paste0(output_dir, "/Upset_plots/Sample ", i, " UpSet plot.png"), width = 8 * 2, height = 5.5 * 2)
+}
+```
+
+## Run overview
+```{r plotting run intensity by number of proteins identified}
+# Create the plot
+Run_annotations %>%
+  ggplot(aes(x = NL, y = `Protein groups`)) +
+  geom_point() +
+  labs(x = "Chromatogram NL", y = "Protein groups identified") +
+  ggtitle("Number of identified protein groups by chromatogram intensity") +
+  stat_smooth(method = lm) +
+  theme_bw()
+
+# Save the plot
+ggsave(paste0(output_dir, "NL prot groups.png"), width = 8, height = 5.5)
+```
+
+## PTM distribution
+Code to test out the distribution of PTMs found in the PSMs. Used to justify which to include in the final search.
+```{r PTM distribution}
+# Load list of searched modifications
+modifications_list <- readLines("data/modifications_list.txt")
+# Load the data - select modifications
+modifications_data <- vroom("data/PTM_optimistation_PSMs.txt") %>% .$Modifications
+# Get total numbers for ratio calculations
+number_of_PSMs <- length(modifications_data)
+# Calculate the numbers of times that modifications occur
+# Do the counting
+counts <- numeric()
+for (i in modifications_list) {
+  count <- sum(grepl(i, modifications_data))
+  counts <- c(counts, count)
+}
+# Make a data frame and plot
+data.frame(
+  Modification = modifications_list,
+  Proportion = counts / number_of_PSMs
+) %>%
+  ggplot(aes(x = Modification, y = Proportion, fill = Modification)) +
+  geom_col() +
+  ggtitle("Rates of modification of PSMs by modification") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave(paste0(output_dir, "modifications.png"), width = 8, height = 5.5)
+```
+
+## PSM counts
+Create a table of PSM counts for proteins of interest by sample
+```{r}
+PSM_counts <- PSMs %>%
+  filter(`Master Protein Accessions` %in% final_proteins) %>%
+  group_by(Sample, `Master Protein Accessions`) %>%
+  summarise(Count = n()) %>%
+  pivot_wider(names_from = Sample, values_from = Count)
+```
+
+## Profile plots
+```{r}
+for(i in final_proteins) {
+  dataProcessPlots(MSstats_processed,
+                   type = "Profileplot",
+                   which.Protein = i,
+                   ylimDown = 0,
+                   originalPlot = TRUE,
+                   summaryPlot = TRUE,
+                   width = 7,
+                   height = 7,
+                   address = paste0(output_dir, "profile_plots", map_gene_symbols(i), "_profile_plot")
+  )
+}
+
+```
 
