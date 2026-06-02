@@ -1,0 +1,248 @@
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+
+output_dir <- "N and P cad cell profiler analysis"
+  dir.create(output_dir, showWarnings = FALSE)
+
+Nuclei <- CellProfiler_nuclei_analysis
+Cells <- CellProfiler_cell_analysis
+
+Merged <- Cells %>%
+  inner_join(
+    Nuclei,
+    by = c("ImageNumber" = "ImageNumber", 
+           "Parent_Nuclei" = "Number_Object_Number")
+  )
+
+# ---- Group by Image and summarise ----
+summary_data <- Merged %>%
+  group_by(ImageNumber) %>%   # Replace with correct column name if different
+  summarise(
+    mean_intensity_DAPI  = mean(Intensity_MeanIntensity_DAPI, na.rm = TRUE),
+    mean_intensity_Ncad  = mean(Intensity_MeanIntensity_Ncad, na.rm = TRUE),
+    mean_intensity_Pcad  = mean(Intensity_MeanIntensity_Pcad, na.rm = TRUE),
+    
+    median_intensity_DAPI  = mean(Intensity_MedianIntensity_DAPI, na.rm = TRUE),
+    median_intensity_Ncad  = mean(Intensity_MedianIntensity_Ncad, na.rm = TRUE),
+    median_intensity_Pcad  = mean(Intensity_MedianIntensity_Pcad, na.rm = TRUE),
+    
+    max_intensity_DAPI   = mean(Intensity_MaxIntensity_DAPI, na.rm = TRUE),
+    max_intensity_Ncad   = mean(Intensity_MaxIntensity_Ncad, na.rm = TRUE),
+    max_intensity_Pcad   = mean(Intensity_MaxIntensity_Pcad, na.rm = TRUE),
+    
+    std_intensity_DAPI   = mean(Intensity_StdIntensity_DAPI, na.rm = TRUE),
+    std_intensity_Ncad   = mean(Intensity_StdIntensity_Ncad, na.rm = TRUE),
+    std_intensity_Pcad   = mean(Intensity_StdIntensity_Pcad, na.rm = TRUE),
+    
+    uq_intensity_DAPI    = mean(Intensity_UpperQuartileIntensity_DAPI, na.rm = TRUE),
+    uq_intensity_Ncad    = mean(Intensity_UpperQuartileIntensity_Ncad, na.rm = TRUE),
+    uq_intensity_Pcad    = mean(Intensity_UpperQuartileIntensity_Pcad, na.rm = TRUE),
+    
+    mean_intensity_edge_DAPI  = mean(Intensity_MeanIntensityEdge_DAPI, na.rm = TRUE),
+    mean_intensity_edge_Ncad  = mean(Intensity_MeanIntensityEdge_Ncad, na.rm = TRUE),
+    
+    max_intensity_edge_DAPI   = mean(Intensity_MaxIntensityEdge_DAPI, na.rm = TRUE),
+    max_intensity_edge_Ncad   = mean(Intensity_MaxIntensityEdge_Ncad, na.rm = TRUE),
+    
+    std_intensity_edge_DAPI   = mean(Intensity_StdIntensityEdge_DAPI, na.rm = TRUE),
+    std_intensity_edge_Ncad   = mean(Intensity_StdIntensityEdge_Ncad, na.rm = TRUE),
+  )
+
+
+# ---- Normalise Ncad by DAPI ----
+summary_data <- summary_data %>%
+  mutate(
+    norm_mean_Ncad_intensity   = mean_intensity_Ncad / mean_intensity_DAPI,
+    norm_median_Ncad_intensity   = median_intensity_Ncad / median_intensity_DAPI,
+    norm_max_Ncad_intensity    = max_intensity_Ncad / max_intensity_DAPI,
+    norm_std_Ncad_intensity    = std_intensity_Ncad / std_intensity_DAPI,
+    norm_uq_Ncad_intensity     = uq_intensity_Ncad / uq_intensity_DAPI,
+    norm_mean_Ncad_intensityEdge   = mean_intensity_edge_Ncad / mean_intensity_edge_DAPI,
+    norm_max_Ncad_intensityEdge    = max_intensity_edge_Ncad / max_intensity_edge_DAPI,
+    norm_std_Ncad_intensityEdge    = std_intensity_edge_Ncad / std_intensity_edge_DAPI,
+    norm_mean_Pcad_intensity   = mean_intensity_Pcad / mean_intensity_DAPI,
+    norm_median_Pcad_intensity   = median_intensity_Pcad / median_intensity_DAPI,
+    norm_max_Pcad_intensity    = max_intensity_Pcad / max_intensity_DAPI,
+    norm_std_Pcad_intensity    = std_intensity_Pcad / std_intensity_DAPI,
+    norm_uq_Pcad_intensity     = uq_intensity_Pcad / uq_intensity_DAPI,
+  )
+
+summary_data <- summary_data %>%
+  mutate(CellLine = case_when(
+    ImageNumber == 1 ~ "20-201",
+    ImageNumber == 2 ~ "21-199",
+    ImageNumber == 3 ~ "22-029",
+    ImageNumber == 4 ~ "22-042",
+    ImageNumber == 5 ~ "22-043",
+    ImageNumber == 6 ~ "22-065",
+    ImageNumber == 7 ~ "22-089",
+    ImageNumber == 8 ~ "22-097",
+    ImageNumber == 9 ~ "22-110",
+    TRUE ~ NA_character_   # fallback in case other numbers appear
+  ))
+
+#plots
+ggplot(summary_data, aes(x = CellLine, y = norm_mean_Ncad_intensity, fill = CellLine)) +
+  geom_col() +
+  labs(
+    title = "Normalized Mean P-cadherin Intensity",
+    x = "Cell Line",
+    y = "Mean Pcad Intensity/Mean DAPI Intensity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+ggplot(summary_data, aes(x = CellLine, y = norm_median_Ncad_intensity, fill = CellLine)) +
+  geom_col() +
+  labs(
+    title = "Normalized Median N-cadherin Intensity",
+    x = "Cell Line",
+    y = "Median Ncad Intensity/Mean DAPI Intensity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+ggplot(summary_data, aes(x = CellLine, y = norm_max_Ncad_intensity, fill = CellLine)) +
+  geom_col() +
+  labs(
+    title = "Normalized Max N-cadherin Intensity",
+    x = "Cell Line",
+    y = "Max Ncad Intensity/Max DAPI Intensity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+ggplot(summary_data, aes(x = CellLine, y = norm_std_Ncad_intensity, fill = CellLine)) +
+  geom_col() +
+  labs(
+    title = "Normalized std deviation N-cadherin Intensity",
+    x = "Cell Line",
+    y = "std Ncad Intensity/std DAPI Intensity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# Define your groups based on ranked groups from size/density analysis
+# Define groups (ranked off size/density)
+summary_data <- summary_data %>%
+  mutate(Group = case_when(
+    CellLine %in% c("21-199", "22-029", "22-042", "22-043") ~ "A",
+    CellLine %in% c("20-201", "22-089", "22-097", "22-110") ~ "B",
+    TRUE ~ NA_character_
+  ))
+
+# Identify numeric columns (exclude CellLine, Group, etc.)
+numeric_cols <- summary_data %>%
+  select(where(is.numeric)) %>%
+  colnames()
+library(dplyr)
+library(purrr)
+library(broom)  # for tidy p-value output
+
+# Run t-test for each column
+stats_results <- map_dfr(numeric_cols, function(col) {
+  t_result <- t.test(summary_data[[col]] ~ summary_data$Group)
+  tibble(
+    Variable = col,
+    GroupA_Mean = mean(summary_data[[col]][summary_data$Group == "A"], na.rm = TRUE),
+    GroupB_Mean = mean(summary_data[[col]][summary_data$Group == "B"], na.rm = TRUE),
+    p_value = t_result$p.value
+  )
+}) %>%
+  mutate(Significance = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01  ~ "**",
+    p_value < 0.05  ~ "*",
+    TRUE ~ "ns"
+  ))
+
+stats_results
+
+viewprintplot_data <- summary_data %>%
+  arrange(Group, CellLine) %>%
+  mutate(CellLine_plot = factor(
+    CellLine,
+    levels = c(
+      # Group A
+      "21-199", "22-029", "22-042", "22-043",
+      " ",   # gap
+      # Group B
+      "20-201", "22-089", "22-097", "22-110"
+    )
+  ))
+
+# Filter out 22-065
+plot_data <- summary_data %>%
+  filter(CellLine != "22-065")
+
+plot_data <- summary_data %>%
+  filter(CellLine != "22-065") %>%
+  arrange(Group, CellLine) %>%
+  mutate(CellLine_plot = factor(
+    CellLine,
+    levels = c(
+      # Group A
+      "21-199", "22-029", "22-042", "22-043",
+      " ",   # gap
+      # Group B
+      "20-201", "22-089", "22-097", "22-110"
+    )
+  ))
+
+plot_data <- summary_data %>%
+  filter(!is.na(Group))
+
+ggplot(plot_data, aes(x = CellLine_plot, y = norm_mean_Ncad_intensity, fill = Group)) +
+  geom_col(width = 0.7) +
+  geom_errorbar(
+    aes(
+      ymin = norm_mean_Ncad_intensity - (std_intensity_Ncad / mean_intensity_DAPI),
+      ymax = norm_mean_Ncad_intensity + (std_intensity_Ncad / mean_intensity_DAPI)
+    ),
+    width = 0.2
+  ) +
+  # Remove bar for the gap
+  scale_x_discrete(drop = FALSE) +
+  
+  labs(
+    x = "Cell Line",
+    y = "Mean Ncad Intensity relative to DAPI",
+    title = "Mean Ncad Intensity by Cell Line (Grouped)"
+  ) +
+  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+library(ggrepel)
+
+ggplot(plot_data, aes(x = Group, y = norm_mean_Ncad_intensity, fill = Group)) +
+  geom_boxplot(width = 0.6, outlier.shape = NA) +
+  geom_jitter(aes(shape = CellLine), width = 0.2, alpha = 0.7) +  # show individual points
+  labs(
+    x = "Group",
+    y = "Mean Ncad Intensity (Normalized to DAPI)",
+    title = "Comparison of Normalized Mean Ncad Intensity: Group A vs Group B"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = c("A" = "#1f77b4", "B" = "#ff7f0e")) +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
