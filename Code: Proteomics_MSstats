@@ -786,6 +786,436 @@ write.csv(
   Proteins_of_interest_RNA_processing,
   file = file.path(output_dir, "Proteins_of_interest_RNA_processing.csv")
 )
+
+# Graph of proteins of interest
+List_of_protein_candidates <- c(
+  "Q9NQ88", "P02794", "P55072", "P52789"
+)
+List_of_protein_candidates <- c("P52789", "Q13501", "P07947", "Q9Y4K0", "P46527", "P11047")
+
+# Assign colours
+donor_colours <- c("20-201" = "#F8766D", "21-199" = "#CD9600", "22-029" = "#7CAE00", "22-042" = "#00BE67", "22-043" = "#00BFC4", "22-073" = "#00A9FF", "22-097" = "#C77CFF", "22-110" = "#FF61CC")
+
+# Load MSstats data and run annotations
+load(LFQ_processed.rda) # loads as MSstats_processed, kept in MSstats > treated_comparisons > MSstats_output
+load (run_annotations_final_analysis) # kept in MSstats_input
+
+df <- as.data.frame(MSstats_processed[["FeatureLevelData"]])
+
+# Filter only for proteins of interest, keeping only columns of interest
+Proteins_filtered_abundance <- df %>%
+  filter(PROTEIN %in% List_of_protein_candidates) %>%
+  dplyr::select(originalRUN, PROTEIN, ABUNDANCE)
+
+# Clean up originalRUN column to allow merge with run_annotations
+Proteins_filtered_abundance <- Proteins_filtered_abundance %>%
+  mutate(Run_clean = str_replace(originalRUN, "(raw)$", ".raw"))
+
+Proteins_filtered_abundance <- Proteins_filtered_abundance %>%
+  left_join(
+    run_annotations_final_analysis %>%
+      dplyr::select(Run, Treatment, Condition_2, BioReplicate),
+    by = c("Run_clean" = "Run")
+  )
+
+# Rename TMZ from 100 to 88uM
+Proteins_analysis <- Proteins_filtered_abundance %>%
+  mutate(
+    Condition_2 = str_replace(Condition_2, "(.*-.*_.*_)100(.*)", "\\188\\2"),
+    Treatment = str_replace(Treatment, "(.*_)100(.*)", "\\188\\2")
+  ) 
+
+# Run stats for each protein, adjusted p-value from MSstats (group comparison, has done multiple hypothesis testing)
+#OR JUST USE MSSTATS ONE
+
+# summarise abundance of protein of interest per sample for each run
+Proteins_analysis_sum <- Proteins_analysis %>%
+  group_by(PROTEIN, BioReplicate, Condition_2) %>%
+  summarise(
+    sum_abundance = sum(ABUNDANCE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Proteins_analysis_sum <- Proteins_analysis %>%
+#  group_by(PROTEIN, originalRUN) %>%
+#  summarise(
+#    ABUNDANCE = sum(ABUNDANCE, na.rm = TRUE),
+#    .groups = "drop"
+#  )
+
+
+# summarise abundance mean of protein of interest per sample for each run
+Proteins_analysis_mean <- Proteins_analysis %>%
+  group_by(PROTEIN, BioReplicate, Condition_2) %>%
+  summarise(
+    Mean_abundance = mean(ABUNDANCE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Separate plots for each protein (bargraph)
+for(i in List_of_protein_candidates) {
+  # Plot abundances for each of these proteins
+  p <- Proteins_analysis_mean %>%
+    filter(PROTEIN == i) %>%
+    ggplot(aes(x = Condition_2, y = Mean_abundance, fill = BioReplicate)) +
+    geom_col() +
+    labs(
+      x = "",
+      y = "Mixed linear effects modelling mean precursor area",
+      title = paste0(i, " protein abundances")
+    ) +
+    theme_bw() +
+    scale_fill_manual(values = donor_colours) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+  
+  # Save the plot
+  ggsave(paste0(output_dir, i, " protein abundances_bar.png"), width = 8, height = 5.5)
+}
+
+# Plot without 20-201 or 21-199
+df <- Proteins_analysis
+
+# Define the order of cell lines you want to keep (and order them manually)
+cell_order <- c("22-029", "22-042", "22-043", "22-073", "22-097", "22-110")
+
+# Extract all unique Condition_2 values
+conds <- unique(df$Condition_2)
+
+# Split into parts: cell line and treatment suffix (everything after the first "_")
+split_df <- tidyr::separate(data.frame(Condition_2 = conds),
+                            col = Condition_2,
+                            into = c("CellLine", "Rest1", "Rest2", "Rest3"),
+                            sep = "_",
+                            remove = FALSE)
+
+# Recombine treatment part for sorting (0_0, 0_88, 12_0, 12_88)
+split_df <- split_df %>%
+  mutate(Treatment = paste(Rest1, Rest2, Rest3, sep = "_")) %>%
+  filter(CellLine %in% cell_order)
+
+# Sort in the desired order: by cell line first, then treatment pattern
+split_df <- split_df %>%
+  arrange(factor(CellLine, levels = cell_order),
+          factor(Treatment, levels = c("0_0", "0_88", "12_0", "12_88")))
+
+# Extract the reordered Condition_2 vector
+reordered_levels <- split_df$Condition_2
+
+# Apply this to your main plotting pipeline
+Proteins_analysis %>%
+  filter(!str_detect(Condition_2, "^(20-201|21-199)_")) %>%
+  filter(PROTEIN %in% List_of_protein_candidates) %>%
+  mutate(Condition_2 = factor(Condition_2, levels = reordered_levels)) %>%
+  group_split(PROTEIN) %>%
+  purrr::walk(~ {
+    prot <- unique(.x$PROTEIN)
+    
+    p <- ggplot(.x, aes(x = Condition_2, y = ABUNDANCE, fill = BioReplicate)) +
+      geom_col() +
+      labs(
+        x = "",
+        y = "Mixed linear effects modelling precursor area",
+        title = paste0(prot, " protein abundances")
+      ) +
+      theme_bw() +
+      scale_fill_manual(values = donor_colours) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none"
+      )
+    
+    safe_name <- gsub("[^A-Za-z0-9_-]", "_", prot)
+    
+    ggsave(
+      filename = file.path("Protein_targets", paste0(safe_name, ".png")),
+      plot = p,
+      width = 6, height = 4, dpi = 300
+    )
+  })
+
+
+
+# Separate plots for each protein (boxplot)
+for(i in List_of_protein_candidates) {
+  # Plot abundances for each of these proteins
+  p <- Proteins_analysis %>%
+  filter(PROTEIN == i) %>%
+    ggplot(aes(x = Condition_2, y = ABUNDANCE, fill = BioReplicate)) +
+    geom_boxplot() +
+    labs(
+      x = "",
+      y = "Mixed linear effects modelling mean precursor area",
+      title = paste0(i, " protein abundances")
+    ) +
+    theme_bw() +
+    scale_fill_manual(values = donor_colours) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+  
+  # Save the plot
+  ggsave(paste0(output_dir, i, " protein abundances.png"), width = 8, height = 5.5)
+}
+
+# Reordered based on treatment groupings
+condition_order <- c(
+  "22-029_0_0","22-042_0_0","22-043_0_0","gap_small1",
+  "22-073_0_0","22-097_0_0","22-110_0_0","gap_big1",
+  
+  "22-029_12_88","22-042_12_88","22-043_12_88","gap_small4",
+  "22-073_12_88","22-097_12_88","22-110_12_88"
+)
+
+for(i in List_of_protein_candidates) {
+  
+  plot_data <- Proteins_analysis %>%
+    filter(PROTEIN == i) %>%
+    mutate(Condition_2 = factor(Condition_2, levels = condition_order)) %>%
+    filter(!is.na(Condition_2))   # removes unwanted replicates
+  
+  p <- ggplot(plot_data,
+              aes(x = Condition_2, y = ABUNDANCE, fill = BioReplicate)) +
+    
+    geom_boxplot() +
+    
+    labs(
+      x = "",
+      y = "Mixed linear effects modelling mean precursor area",
+      title = paste0(i, " protein abundances")
+    ) +
+    
+    theme_bw() +
+    
+    scale_fill_manual(values = donor_colours) +
+    
+    scale_x_discrete(
+  drop = FALSE,
+  labels = function(x) {
+    x <- ifelse(grepl("gap", x), "", x)
+    sub("_.*", "", x)
+  }
+) +
+    
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+  
+  ggsave(paste0(output_dir, i, " protein abundances.png"),
+         p, width = 8, height = 5.5)
+}
+
+
+
+
+# Define groups
+group1 <- c("22-029", "22-042", "22-043")
+group2 <- c("22-073", "22-097", "22-110")
+
+# without stats
+for(i in List_of_protein_candidates) {
+  
+  plot_data <- Proteins_analysis %>%
+    filter(PROTEIN == i) %>%
+    mutate(
+      Group = case_when(
+        BioReplicate %in% group1 ~ "Group 1",
+        BioReplicate %in% group2 ~ "Group 2"
+      ),
+      Group_Treatment = paste(Group, Treatment)
+    ) %>%
+    filter(!is.na(Group))
+  
+  # Set bar order
+  plot_data$Group_Treatment <- factor(
+    plot_data$Group_Treatment,
+    levels = c(
+      "Group 1 0_0", "Group 2 0_0",
+      "Group 1 0_88", "Group 2 0_88",
+      "Group 1 12_0", "Group 2 12_0",
+      "Group 1 12_88", "Group 2 12_88"
+    )
+  )
+  
+  p <- ggplot(plot_data, aes(x = Group_Treatment, y = ABUNDANCE, fill = Group)) +
+    stat_summary(fun = mean, geom = "bar") +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+    labs(
+      x = "",
+      y = "Mixed linear effects modelling mean precursor area",
+      title = paste0(i, " protein abundances")
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+  
+  ggsave(paste0(output_dir, i, " protein abundances.png"), p, width = 8, height = 5.5)
+}
+
+# with stats
+for(i in List_of_protein_candidates) {
+  
+  plot_data <- Proteins_analysis %>%
+    filter(PROTEIN == i) %>%
+    mutate(
+      Group = case_when(
+        BioReplicate %in% group1 ~ "Group 1",
+        BioReplicate %in% group2 ~ "Group 2"
+      )
+    ) %>%
+    filter(!is.na(Group))
+  
+  plot_data$Group <- factor(plot_data$Group,
+                            levels = c("Group 1","Group 2"))
+  
+  plot_data$Treatment <- factor(
+    plot_data$Treatment,
+    levels = c("0_0","0_88","12_0","12_88")
+  )
+  
+  p <- ggplot(plot_data,
+              aes(x = Treatment, y = ABUNDANCE, fill = Group)) +
+    
+    stat_summary(fun = mean,
+                 geom = "bar",
+                 position = position_dodge2(width = dodge_val, preserve = "single")) +
+    
+    stat_summary(fun.data = mean_se,
+                 geom = "errorbar",
+                 width = 0.25,
+                 position = position_dodge2(width = dodge_val, preserve = "single")) +
+    
+    geom_jitter(aes(group = Group),
+                position = position_jitterdodge(jitter.width = 0.5),
+                size = 2,
+                colour = "black",
+                alpha = 0.3,
+                show.legend = FALSE) +
+    
+    stat_compare_means(
+      aes(group = Group),
+      method = "wilcox.test",
+      label = "p.signif"
+    ) +
+    
+    scale_fill_manual(values = c(
+      "Group 1" = "grey40",
+      "Group 2" = "grey75"
+    )) +
+    
+    labs(
+      x = "",
+      y = "Mixed linear effects modelling mean precursor area",
+      title = paste0(i, " protein abundances")
+    ) +
+    theme_bw()
+  
+  ggsave(paste0(output_dir, i, " protein abundances.png"),
+         p, width = 8, height = 5.5)
+}
+
+# Select for proteins of interest
+# load IPA_input_FASTA_nocont
+
+Significant_proteins <- c("CDCA5", "CDK1", "CENPE", "CENPF", "CENPH", "KIF2A", "ANAPC1",
+"CDK2", "GINS2", "GINS4", "MCM2", "MCM4", "MCM5", "MCM6", "POLD2", "RFC3", "RFC4", "RPA1",
+"RPA3", "ZW10", "MAD2L1", "NUF2", "PPP2CB", "CSNK1E", "DYNC1LI1", "DYNLL2", "TUBB2A",
+"TUBB4A", "TUBB4B", "TUBB8", "XPO1", "EZR", "MAPK1", "MSN", "AJUBA", "GTSE1", "PHLDA1",
+"CDKN1A", "UBE2S", "CDKN1B", "LAMTOR1", "RHEB", "WRAP53", "MRPL14", "MRPL16", "MRPL17",
+"MRPL24", "MRPL28", "MRPL3", "MRPL32", "MRPL38", "MRPL41", "MRPL46", "MRPL50", "MRPS10",
+"MRPS14", "MRPS17", "MRPS18B", "MRPS22", "MRPS28", "MRPS30", "MRPS31", "MRPS34", "MRPS35",
+"MRPS5", "MRPS7", "COX5B", "COX6A1", "CYC1", "MT-CO3", "MT-ND1", "NDUFA9", "UQCRC2",
+"COX17", "MT-ATP6", "ATP5F1B", "ATP5F1D", "ATP5PO", "ACAD9", "ABCD1", "FIS1", "PEX3",
+"SLC25A17", "CPT1A", "FASN", "HK2", "PGK1", "PIK3R2", "PIK3R4", "PRDX2", "PRDX4", "PRDX6",
+"KEAP1", "TGFB1", "TIGAR", "APOOL", "TOMM34", "TOMM40", "TOMM70", "ACAA1", "ACOT8",
+"HSD17B4", "BCAT2", "IVD", "MCCC1", "MCCC2", "GPX1", "GPX7", "ARF4", "COPZ2", "KDELR1",
+"SEC22B", "TMED2", "TUBA1C", "DERL2", "PSMA2", "PSMB1", "PSMB10", "PSMB2", "PSMD1", "PSMD12",
+"PSMD2", "PSMD3", "PSMD6", "PSMD7", "PSME2", "SEL1L", "VCP", "COG1", "COG3", "COG8", "GOSR1",
+"CDC42", "YES1", "CNIH3", "LMAN2", "SEC22A", "ALG11", "ALG3", "DPM1", "DNAJC3", "UBE2O", "UBE2R2",
+"UCHL1", "UCHL3", "USP9Y", "SEC61B", "SEC61G", "UBL4A", "HYOU1", "PDIA5", "COX6C", "COX7A2",
+"COX7A2L", "COX7C", "COX8A", "HMOX1", "NDUFA4", "BACH1", "LIMD1", "PAK2", "GSTM3", "GSTP1",
+"GSTT1", "CHMP6", "HSPA8", "SQSTM1", "SOD1", "SOD3", "FTH1", "FTL", "PPIF", "SLC25A4", "SLC25A5",
+"SLC25A6", "VDAC3", "B2M", "HLA-B", "TAP2", "GBP1", "GBP2", "HLA-DPA1", "HLA-DRA", "HLA-DRB1",
+"CTSB", "CTSF", "CTSH", "ARSB", "GM2A", "LAMC1", "COL1A1", "COL1A2", "COL3A1", "COL4A1", "COL4A3",
+"COL5A1", "COL5A2", "COL6A1", "COL6A2", "CRK", "NRAS", "COL8A1", "PCOLCE", "LOXL2", "THBS1",
+"CTSK", "MMP14", "P4HA1", "SERPINH1", "AARS2", "DARS2", "FARSA", "LARS2", "MARS1", "QARS1",
+"RARS2", "TARS1", "CCNH", "GTF2A1", "TAF7", "RPL32", "RPL35", "RPL36", "RPL38", "RPL4",
+"RPL6", "RPS26", "RPS27L", "RPS28", "RPS8", "DHX37", "EMG1", "NOP58", "CPSF2", "HNRNPA2B1",
+"HNRNPA3", "HNRNPC", "HNRNPH1", "HNRNPK", "HNRNPL", "SF3A1", "SF3B5", "SLU7", "SRSF1",
+"SRSF4", "SRSF9", "WDR33")
+
+filtered_data <- IPA_input_FASTA_nocont %>%
+filter(`First gene symbol` %in% Significant_proteins) %>%
+dplyr::select(
+`First gene symbol`,
+`Invasive vs Proliferative 12_100 log2FC`,
+`Invasive vs Proliferative 12_100 adj.pvalue`,
+`Invasive vs Proliferative 0_0 log2FC`,
+`Invasive vs Proliferative 0_0 adj.pvalue`
+)
+
+# View result
+head(filtered_data)
+
+# Save to CSV
+write.csv(
+filtered_data,
+file = file.path(output_dir, "filtered_significant_proteins.csv")
+)
+
+# Filter for consistent expression in treat and cntrl
+filtered_data <- filtered_data %>%
+  mutate(across(contains("log2FC"), ~ifelse(is.infinite(.), NA, .)))
+
+filtered_data <- filtered_data %>%
+  mutate(
+    across(
+      contains("log2FC"),
+      ~ . %>%
+        stringr::str_trim() %>%
+        stringr::str_replace("^#NAME\\?$", "-Inf") %>%
+        as.numeric()
+    )
+  )
+
+strong_both <- filtered_data %>%
+  filter(
+    `Invasive vs Proliferative 12_100 adj.pvalue` <= 0.05,
+    `Invasive vs Proliferative 0_0 adj.pvalue` <= 0.05
+  )
+
+strong_both <- strong_both %>%
+  filter(
+    abs(`Invasive vs Proliferative 12_100 log2FC`) >= 1,
+    abs(`Invasive vs Proliferative 0_0 log2FC`) >= 1
+  )
+
+consistent <- strong_both %>%
+  filter(
+    sign(`Invasive vs Proliferative 12_100 log2FC`) ==
+      sign(`Invasive vs Proliferative 0_0 log2FC`)
+  )
+
+ranked <- consistent %>%
+  mutate(score =
+           abs(`Invasive vs Proliferative 12_100 log2FC`) *
+           -log10(`Invasive vs Proliferative 12_100 adj.pvalue`) +
+           abs(`Invasive vs Proliferative 0_0 log2FC`) *
+           -log10(`Invasive vs Proliferative 0_0 adj.pvalue`)
+  ) %>%
+  arrange(desc(score))
+
+# Save to CSV
+write.csv(
+  ranked,
+  file = file.path(output_dir, "consitent_ranked_significant_proteins.csv")
+)
 # Print the result
 print(df)
 ```
