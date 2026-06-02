@@ -1,1 +1,259 @@
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
 
+output_dir <- getwd()
+
+data <- read.csv("Protein_targets.csv")
+Protein_targets <- Protein_markers_avg
+
+
+## Group data by ROI type
+# Define groups
+Nad_samples <- c("201_Nad", "29_Nad", "42_Nad", "73_Nad", "110_Nad")
+VT_samples <- c("201_VT", "29_VT", "42_VT", "73_VT", "110_VT")
+
+# Keep only relevant columns
+Protein_targets <- Protein_targets[
+  Protein_targets$CellLine_ROI %in% c(Nad_samples, VT_samples),
+]
+
+# Extract ROI ID (numeric) from CellLine_ROI
+Protein_targets$ROI_ID <- sub("_(NA|VT|Nad)$", "", Protein_targets$CellLine_ROI)
+
+# Create clean Group column (NA vs VT)
+Protein_targets$Group <- sub(".*_(NA|VT|Nad)$", "\\1", Protein_targets$CellLine_ROI)
+
+# Optional: unify "Nad" → "NA"
+Protein_targets$Group[Protein_targets$Group == "Nad"] <- "NA"
+
+# Check
+table(Protein_targets$ROI_ID, Protein_targets$Group)
+
+## Stats of protein expression between ROI type
+# Identify protein columns
+protein_cols <- setdiff(colnames(Protein_targets),
+                        c("CellLine_ROI", "ROI", "CellLine", "ROI_ID", "Group"))
+
+Protein_targets$Group <- sub(".*_(NA|VT|Nad)$", "\\1", Protein_targets$CellLine_ROI)
+Protein_targets$Group[Protein_targets$Group == "Nad"] <- "NA"
+
+# Run paired t-tests
+stats_results <- data.frame(
+  Protein = protein_cols,
+  p_value = sapply(protein_cols, function(prot) {
+    
+    df <- Protein_targets %>%
+      dplyr::select(ROI_ID, Group, all_of(prot)) %>%
+      tidyr::pivot_wider(names_from = Group, values_from = all_of(prot))
+    
+    # Keep only complete pairs
+    df <- df[complete.cases(df[, c("NA", "VT")]), ]
+    
+    if(nrow(df) > 1) {
+      t.test(df$`NA`, df$`VT`, paired = TRUE)$p.value
+    } else {
+      NA
+    }
+  })
+)
+
+# Adjust p-values
+stats_results$adj_p_value <- p.adjust(stats_results$p_value, method = "BH")
+
+# Save results
+write.csv(stats_results, file.path(output_dir, "paired_protein_statistics_089removed.csv"),
+          row.names = FALSE)
+
+
+
+## Plot each protein separately 
+for (prot in protein_cols) {
+  
+  df <- Protein_targets %>%
+    dplyr::select(ROI_ID, Group, all_of(prot))
+  
+  # Remove missing values
+  df <- df[!is.na(df[[prot]]), ]
+  
+  if(nrow(df) <= 1) next
+  
+  # Ensure correct group order
+  df$Group <- factor(df$Group, levels = c("NA", "VT"))
+  
+  # Get p-value
+  df_wide <- df %>%
+    tidyr::pivot_wider(names_from = Group, values_from = all_of(prot))
+  
+  df_wide <- df_wide[complete.cases(df_wide[, c("NA", "VT")]), ]
+  
+  if(nrow(df_wide) > 1) {
+    p_val <- t.test(df_wide$`NA`, df_wide$`VT`, paired = TRUE)$p.value
+  } else {
+    p_val <- NA
+  }
+  
+  # Clean filename
+  safe_name <- gsub("[^A-Za-z0-9_]", "_", prot)
+  
+  # Plot
+  p <- ggplot(df, aes(x = Group, y = .data[[prot]], fill = Group)) +
+    geom_boxplot(width = 0.5, outlier.shape = NA) +
+    
+    geom_jitter(
+      aes(shape = ROI_ID),
+      color = "black",   # set outside aes()
+      width = 0.1,
+      size = 2,
+      alpha = 0.8
+    ) +
+    
+    scale_fill_manual(values = c("NA" = "slateblue", "VT" = "cyan4")) +
+    
+    ggtitle(prot) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "right"
+    )
+  
+  # Save
+  ggsave(
+    filename = file.path(output_dir, paste0(safe_name, ".png")),
+    plot = p,
+    width = 5,
+    height = 4
+  )
+}
+
+
+
+## Group by treatment response for both ROIs
+## Group data by cell line
+# Define groups
+Prolif <- c("201_Nad", "201_VT", "29_Nad", "29_VT", "42_Nad", "42_VT")
+Invasive <- c("73_Nad", "110_Nad", "73_VT", "110_VT")
+
+# Keep only relevant columns
+Protein_targets_TR <- Protein_targets[
+  Protein_targets$CellLine_ROI %in% c(Prolif, Invasive),
+]
+
+# Assign Group explicitly
+Protein_targets_TR$Group <- ifelse(
+  Protein_targets_TR$CellLine_ROI %in% Prolif, "Prolif", "Invasive"
+)
+
+table(Protein_targets_TR$CellLine_ROI, Protein_targets_TR$Group)
+
+# Extract patient data
+Protein_targets_TR$Patient_ID <- sub("_(Nad|VT)$", "", Protein_targets_TR$CellLine_ROI)
+
+# Average ROIs per patient
+Protein_patient_avg <- Protein_targets_TR %>%
+  group_by(Patient_ID, Group) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+## Stats of protein expression between treatment response type
+# Identify protein columns
+protein_cols <- setdiff(colnames(Protein_patient_avg),
+                        c("Patient_ID", "Group"))
+
+stats_results <- data.frame(
+  Protein = protein_cols,
+  p_value = sapply(protein_cols, function(prot) {
+    
+    df <- Protein_patient_avg[, c("Group", prot)]
+    colnames(df)[2] <- "Expression"
+    
+    if(length(unique(df$Group)) < 2) return(NA)
+    if(sum(df$Group == "Prolif") < 2 | sum(df$Group == "Invasive") < 2) return(NA)
+    
+    wilcox.test(Expression ~ Group, data = df)$p.value
+  })
+)
+
+stats_results$adj_p_value <- p.adjust(stats_results$p_value, method = "BH")
+
+# Save results
+write.csv(stats_results, file.path(output_dir, "wilcox_protein_treatmentresponse_statistics.csv"),
+          row.names = FALSE)
+
+
+
+## Plot each protein separately 
+for (prot in protein_cols) {
+  
+  df <- Protein_targets_TR %>%
+    dplyr::select(CellLine, Group, all_of(prot)) %>%
+    group_by(CellLine, Group) %>%
+    summarise(value = mean(.data[[prot]], na.rm = TRUE), .groups = "drop")
+  
+ # df <- df[!is.na(df[[prot]]), ]
+#  if(nrow(df) <= 1) next
+  
+  df$Group <- factor(df$Group, levels = c("Prolif", "Invasive"))
+  df$CellLine <- factor(df$CellLine)  # <- important fix!
+  
+  safe_name <- gsub("[^A-Za-z0-9_]", "_", prot)
+  
+  p <- ggplot(df, aes(x = Group, y = value, fill = Group)) +
+    geom_boxplot(width = 0.5, outlier.shape = NA) +
+    geom_jitter(aes(shape = CellLine), width = 0.1, size = 2, alpha = 0.8) +
+    scale_fill_manual(values = c("Prolif" = "#0072B2", "Invasive" = "#D55E00")) +
+    ggtitle(prot) +
+    ylab("Normalized Protein Expression (to GAPDH)") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "right"
+    )
+  
+  ggsave(
+    filename = file.path(output_dir, paste0(safe_name, "_TR.png")),
+    plot = p,
+    width = 5,
+    height = 4
+  )
+}
+
+
+# With seperate colours for ROI
+for (prot in protein_cols) {
+  
+  df <- Protein_targets_TR %>%
+    dplyr::select(CellLine, CellLine_ROI, Group, all_of(prot))
+  
+  df <- df[!is.na(df[[prot]]), ]
+  if(nrow(df) <= 1) next
+  
+  df$Group <- factor(df$Group, levels = c("Prolif", "Invasive"))
+  df$CellLine <- factor(df$CellLine)  # <- important fix!
+  
+  df$Color <- ifelse(grepl("_Nad$", df$CellLine_ROI), "black",
+                     ifelse(grepl("_VT$", df$CellLine_ROI), "lightgrey", "blue"))
+  
+  safe_name <- gsub("[^A-Za-z0-9_]", "_", prot)
+  
+  p <- ggplot(df, aes(x = Group, y = .data[[prot]], fill = Group)) +
+    geom_boxplot(width = 0.5, outlier.shape = NA) +
+    geom_jitter(aes(shape = CellLine, color = Color), width = 0.1, size = 2, alpha = 0.8) +
+    
+    scale_fill_manual(values = c("Prolif" = "#0072B2", "Invasive" = "#D55E00")) +
+    scale_color_identity() +  # use the colors exactly as in df$Color
+    ggtitle(prot) +
+    ylab("Normalized Protein Expression (to GAPDH)") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "right"
+    )
+  
+  ggsave(
+    filename = file.path(output_dir, paste0(safe_name, "_TR.png")),
+    plot = p,
+    width = 5,
+    height = 4
+  )
+}
