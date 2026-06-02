@@ -1,2 +1,2 @@
-# Thesis_2
+# Thesis
 Repo for thesis documents
